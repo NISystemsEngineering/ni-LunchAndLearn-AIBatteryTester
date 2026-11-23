@@ -1,0 +1,16 @@
+# Office lock files (e.g. ~$AI Battery Test Demo.pptx while the deck is open)
+~$*
+
+# LabVIEW per-user state
+*.UserState
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Test results exported by the apps
+*.csv

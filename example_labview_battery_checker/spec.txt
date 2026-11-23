@@ -1,0 +1,86 @@
+AA BATTERY HEALTH CHECKER - SPECIFICATION
+==========================================
+
+User request (verbatim):
+  Use LabVIEW MCP to develop a battery health checker for AA batteries using the PXIe-4082 in
+  this system. The application should be able to:
+  - Distinguish battery chemistry between standard non-rechargable, Ni-MH, and Li-ion with a BMS
+  - Measure approximate charge level
+  - Should run a test automatically when a battery is connected to the system.
+
+Clarified with the user:
+  - Li-ion type: ONLY the 1.5 V regulated USB-rechargeable Li-ion AA (internal Li-ion cell +
+    BMS + DC-DC buck converter, steady ~1.5 V output). Not 3.7 V 14500 cells.
+  - Fixture: battery holder wired straight to the PXIe-4082 HI / LO (V-Ohm) inputs. No other
+    hardware, no load resistor.
+
+Hardware
+  - NI PXIe-4082 DMM, resource name "PXI1Slot3" (NI-DMM driver, LabVIEW API in
+    C:\Program Files\NI\LVAddons\nidmm\1\instr.lib\niDMM\nidmm.llb).
+  - Session wire type: ref{IVI.niDMM} ("instrument handle").
+  - Measured on this station: open inputs, DC volts reads ~0.26 mV. Waveform mode on the 10 V
+    range with open inputs shows ~0.3-0.4 V pp of pickup (drops once a battery is connected).
+    Diode mode sources 1 mA and clamps at ~4.16 V open-circuit.
+
+Measurement principle
+  1. OPEN-CIRCUIT VOLTAGE (OCV): DC volts, 10 V range, 6.5 digits, high input impedance
+     (>10 GOhm, so the cell is not loaded). Average of 10 readings -> OCV and its std dev.
+  2. RIPPLE: waveform voltage acquisition, 10 V range, 100 kS/s, 20 000 points (0.2 s).
+     Ripple pp = max - min; Ripple RMS = std dev of the samples. A chemical cell is quiet;
+     the regulated Li-ion cell's DC-DC converter shows switching/burst ripple.
+  3. INTERNAL RESISTANCE (IR) via DIODE MODE: NI-DMM function Diode, 10 V range, 6.5 digits,
+     1 mA source current. The DMM then reads V_diode = OCV + 1 mA * R. Measure DC volts before
+     (V1) and after (V2) the diode reading to cancel drift:
+         IR (Ohm) = (V_diode - (V1 + V2) / 2) / 0.001
+     IR includes holder contact + lead resistance. Ni-MH: low (~0.03-0.15 Ohm), alkaline: higher
+     (~0.15-0.5 Ohm fresh, more when used). A regulated Li-ion cell cannot SINK current, so its
+     output rises under the injected 1 mA -> large apparent IR (> 1.5 Ohm) or the 4.16 V clamp.
+     OCV is ALWAYS V1 (the reading BEFORE the diode step): V2 is only used to cancel drift in IR,
+     because a regulated Li-ion output is pumped up by the 1 mA and V2 then reads too high.
+     IR = NaN when it cannot be determined (no battery, reversed, OCV > 1.8 V, diode reading
+     overrange / >= 4 V is reported as IR = +Inf).
+
+Classification rules (Classify Battery.vi), in this order:
+  |OCV| < 0.20 V                                  -> No Battery
+  OCV <= -0.20 V                                  -> Reversed Polarity
+  OCV > 1.80 V                                    -> Unknown (not a single AA cell)
+  1.40 <= OCV <= 1.60 AND (Ripple pp >= 0.003 V OR IR >= 1.5 Ohm)
+                                                  -> Li-ion 1.5V (BMS)  charge = NaN
+  OCV < 1.00 V                                    -> Depleted (any chemistry), charge = 0 %
+  OCV >= 1.50 V                                   -> Alkaline
+  1.00 <= OCV < 1.50 V:
+     IR is NaN                                    -> Alkaline or Ni-MH (ambiguous)
+     IR <= 0.28 Ohm                               -> Ni-MH
+     IR >= 0.35 Ohm                               -> Alkaline
+     otherwise                                    -> Alkaline or Ni-MH (ambiguous)
+  All thresholds are constants inside Classify Battery.vi.
+
+Calibration measured 2026-11-20 on this fixture (holder + leads included in IR):
+  Li-ion 1.5V (BMS): OCV 1.519 V, ripple 21.7 mV pp / 5.5 mV rms (100 kS/s), diode reading pinned
+                     at the 4.156 V clamp (IR effectively infinite). Right after the diode step the
+                     output capacitor sits at ~1.86 V and decays back within ~0.5 s.
+  Ni-MH:             OCV 1.346 V, ripple 0.48 mV pp / 0.06 mV rms, IR 0.217 Ohm +/- 0.0005 (6 runs).
+  Alkaline:          NOT YET MEASURED - the 0.35 Ohm alkaline limit is provisional (literature
+                     alkaline AA ~0.15-0.3 Ohm + ~0.17 Ohm fixture).
+  Ripple threshold 3 mV = geometric mean of the Ni-MH and Li-ion ripple.
+
+Charge estimate (Estimate Charge.vi), linear interpolation of resting OCV, clamped 0..100 %:
+  Alkaline OCV (V): 1.00 1.10 1.18 1.25 1.30 1.35 1.40 1.45 1.50 1.55 1.60
+           charge %:   0    5   10   20   30   40   50   60   70   85  100
+  Ni-MH    OCV (V): 1.00 1.15 1.20 1.23 1.25 1.27 1.29 1.32 1.36 1.40
+           charge %:   0    5   15   25   40   55   70   85   95  100
+  Li-ion 1.5V (BMS): NaN (regulated output, charge cannot be read from voltage)
+  Depleted: 0. Ambiguous: Classify reports the LOWER of the two estimates as Charge and both in
+  the Description. No Battery / Reversed / Unknown: NaN.
+
+Automatic test (Battery Health Checker.vi, top-level UI)
+  - Opens the DMM ("PXI1Slot3" default, string control), loops every 200 ms reading a quick
+    DC voltage (Read Battery Voltage.vi).
+  - Battery present when |V| >= 0.20 V on 3 consecutive polls (debounce while inserting).
+  - Then runs Measure Battery.vi + Classify Battery.vi once, shows the results, appends a row
+    to the history table, and shows "Test complete - remove battery".
+  - Waits until |V| < 0.10 V on 3 consecutive polls, then clears the result and returns to
+    "Waiting for battery".
+  - Stop button closes the DMM session. Errors are shown and end the loop.
+  - Known limit: a regulated Li-ion cell whose BMS has cut off reads ~0 V, so it looks like an
+    empty holder.

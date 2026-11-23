@@ -1,0 +1,84 @@
+{
+  "application": "AA Battery Health Checker",
+  "root": ".",
+  "project": "Battery Health Checker.lvproj",
+  "panePattern": 4833,
+  "types": {
+    "Error": "cluster{bool.status,int32.code,string.source}",
+    "Chemistry": "uint16{No Battery,Reversed Polarity,Alkaline,Ni-MH,Alkaline or Ni-MH,Li-ion 1.5V (BMS),Depleted,Unknown}",
+    "Measurement": "cluster{double.OCV (V),double.OCV Std Dev (V),double.Ripple pp (V),double.Ripple RMS (V),double.Diode Voltage (V),double.Internal Resistance (Ohm)}",
+    "DMM": "ref{IVI.niDMM}"
+  },
+  "vis": [
+    {
+      "path": "Analysis/Estimate Charge.vi",
+      "builder": "analysis",
+      "purpose": "Pure function. Approximate state of charge (0..100 %) from resting open-circuit voltage by linear interpolation of the chemistry's OCV table (spec.txt, 'Charge estimate'). Alkaline and Ni-MH use their tables; Depleted -> 0; every other chemistry -> NaN. Result clamped to 0..100.",
+      "inputs": [
+        {"name": "OCV (V)", "type": "double", "conIdx": 0, "connection": "recommended"},
+        {"name": "Chemistry", "type": "@Chemistry", "conIdx": 5, "connection": "recommended"},
+        {"name": "error in", "type": "@Error", "conIdx": 11, "connection": "required"}
+      ],
+      "outputs": [
+        {"name": "Charge (%)", "type": "double", "conIdx": 4, "connection": "recommended"},
+        {"name": "error out", "type": "@Error", "conIdx": 15, "connection": "recommended"}
+      ]
+    },
+    {
+      "path": "Analysis/Classify Battery.vi",
+      "builder": "analysis",
+      "purpose": "Pure function. Applies the classification rules of spec.txt to a Measurement and returns the chemistry, the approximate charge (via Estimate Charge.vi; for the ambiguous case the lower of the Alkaline and Ni-MH estimates) and a one-line human-readable description (chemistry, charge, OCV, IR, and for the ambiguous case both estimates).",
+      "inputs": [
+        {"name": "Measurement", "type": "@Measurement", "conIdx": 0, "connection": "recommended"},
+        {"name": "error in", "type": "@Error", "conIdx": 11, "connection": "required"}
+      ],
+      "outputs": [
+        {"name": "Chemistry", "type": "@Chemistry", "conIdx": 4, "connection": "recommended"},
+        {"name": "Charge (%)", "type": "double", "conIdx": 6, "connection": "recommended"},
+        {"name": "Description", "type": "string", "conIdx": 8, "connection": "recommended"},
+        {"name": "error out", "type": "@Error", "conIdx": 15, "connection": "recommended"}
+      ],
+      "calls": ["Analysis/Estimate Charge.vi"]
+    },
+    {
+      "path": "Hardware/Read Battery Voltage.vi",
+      "builder": "hardware",
+      "purpose": "Fast single DC-volts reading for battery presence polling: configure DC Volts, 10 V range, 4.5 digits on the given NI-DMM session, then niDMM Read. Does not open or close the session.",
+      "inputs": [
+        {"name": "instrument handle", "type": "@DMM", "conIdx": 0, "connection": "recommended"},
+        {"name": "error in", "type": "@Error", "conIdx": 11, "connection": "required"}
+      ],
+      "outputs": [
+        {"name": "instrument handle out", "type": "@DMM", "conIdx": 4, "connection": "recommended"},
+        {"name": "Voltage (V)", "type": "double", "conIdx": 6, "connection": "recommended"},
+        {"name": "error out", "type": "@Error", "conIdx": 15, "connection": "recommended"}
+      ]
+    },
+    {
+      "path": "Hardware/Measure Battery.vi",
+      "builder": "hardware",
+      "purpose": "Full measurement of the connected cell on the given NI-DMM session (spec.txt, 'Measurement principle'): (1) DC volts 10 V range 6.5 digits, input resistance > 10 GOhm, 10 readings -> V1 mean and std dev; (2) waveform voltage 10 V range 100 kS/s 20000 points -> Ripple pp (max-min) and Ripple RMS (std dev); (3) only when 0.2 V <= V1 <= 1.8 V: Diode function 10 V range 6.5 digits (1 mA source), mean of 5 readings -> Diode Voltage, then DC volts again (10 readings) -> V2; Internal Resistance = (Diode Voltage - (V1+V2)/2)/0.001 (+Inf if the diode reading is >= 4.0 V or over-range); otherwise Diode Voltage and Internal Resistance are NaN. OCV = V1 (or (V1+V2)/2 when V2 was measured). Leaves the DMM back in DC volts. Does not open or close the session.",
+      "inputs": [
+        {"name": "instrument handle", "type": "@DMM", "conIdx": 0, "connection": "recommended"},
+        {"name": "error in", "type": "@Error", "conIdx": 11, "connection": "required"}
+      ],
+      "outputs": [
+        {"name": "instrument handle out", "type": "@DMM", "conIdx": 4, "connection": "recommended"},
+        {"name": "Measurement", "type": "@Measurement", "conIdx": 6, "connection": "recommended"},
+        {"name": "error out", "type": "@Error", "conIdx": 15, "connection": "recommended"}
+      ]
+    },
+    {
+      "path": "Battery Health Checker.vi",
+      "builder": "main",
+      "purpose": "Top-level UI. Auto-detect state machine of spec.txt ('Automatic test'): niDMM Initialize on the 'DMM Resource' control (default PXI1Slot3), poll Read Battery Voltage every 200 ms, debounce insertion (|V| >= 0.20 V, 3 polls), run Measure Battery + Classify Battery once, show results and append a history row, wait for removal (|V| < 0.10 V, 3 polls), repeat until Stop; then niDMM Close.",
+      "inputs": [
+        {"name": "error in", "type": "@Error", "conIdx": 11, "connection": "required"}
+      ],
+      "outputs": [
+        {"name": "error out", "type": "@Error", "conIdx": 15, "connection": "recommended"}
+      ],
+      "calls": ["Hardware/Read Battery Voltage.vi", "Hardware/Measure Battery.vi", "Analysis/Classify Battery.vi", "niDMM Initialize.vi", "niDMM Close.vi"]
+    }
+  ]
+}
