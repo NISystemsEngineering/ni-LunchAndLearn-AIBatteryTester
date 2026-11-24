@@ -14,3 +14,6 @@ __pycache__/
 
 # Test results exported by the apps
 *.csv
+
+# Local QR code files (kept out of the repo)
+qr-code/
